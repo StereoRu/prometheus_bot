@@ -56,4 +56,5 @@ cat /etc/alertmanager/prometheus_bot/config.yaml
 telegram_token: "1234:asdf"
 listen_addr: ":9087"
 debug_bot: false
+split_msg_byte: 4000
 ```

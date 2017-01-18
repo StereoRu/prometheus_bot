@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -42,9 +43,10 @@ type Alert struct {
 var config_path = flag.String("c", "config/config.yaml", "Path to a config file")
 
 type Config struct {
-	TelegramToken string `yaml:"telegram_token"`
-	ListenAddr    string `yaml:"listen_addr"`
-	DebugBot      bool   `yaml:"debug_bot"`
+	TelegramToken     string `yaml:"telegram_token"`
+	ListenAddr        string `yaml:"listen_addr"`
+	DebugBot          bool   `yaml:"debug_bot"`
+	SplitMessageBytes int    `yaml:"split_msg_byte"`
 }
 
 var cfg = Config{}
@@ -63,6 +65,10 @@ func main() {
 
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = ":9087"
+	}
+
+	if cfg.SplitMessageBytes == 0 {
+		cfg.SplitMessageBytes = 4000
 	}
 
 	bot, err := tgbotapi.NewBotAPI(cfg.TelegramToken)
@@ -110,6 +116,29 @@ func main() {
 				}
 			}
 			return false
+		}
+
+		sendMessage := func(msgtext string) bool {
+			msg := tgbotapi.NewMessage(chatid, msgtext)
+			msg.ParseMode = tgbotapi.ModeHTML
+
+			msg.DisableWebPagePreview = true
+
+			sendmsg, err := bot.Send(msg)
+			if err == nil {
+				c.String(http.StatusOK, "telegram msg sent.")
+				return false
+			} else {
+				log.Printf("Error sending message: %s", err)
+				c.JSON(http.StatusServiceUnavailable, gin.H{
+					"err":     fmt.Sprint(err),
+					"message": sendmsg,
+					"srcmsg":  fmt.Sprint(msgtext),
+				})
+				msg := tgbotapi.NewMessage(chatid, "Error sending message, checkout logs")
+				bot.Send(msg)
+				return true
+			}
 		}
 
 		if err != nil {
@@ -214,26 +243,27 @@ func main() {
 			strings.Join(commonAnnotations, "\n"),
 			strings.Join(alertDetails, "\n"),
 		)
-		log.Printf("message: ", msgtext)
 
-		msg := tgbotapi.NewMessage(chatid, msgtext)
-		msg.ParseMode = tgbotapi.ModeHTML
+		strReader := strings.NewReader(msgtext)
+		bufReader := bufio.NewReader(strReader)
+		var buf string
+		for {
+			str, err := bufReader.ReadString('\n')
+			if len(str)+len(buf) > cfg.SplitMessageBytes {
+				log.Printf("message: ", buf)
+				sendMessage(buf)
+				buf = str
+			} else {
+				buf += str
+			}
 
-		msg.DisableWebPagePreview = true
-
-		sendmsg, err := bot.Send(msg)
-		if err == nil {
-			c.String(http.StatusOK, "telegram msg sent.")
-		} else {
-			log.Printf("Error sending message: %s", err)
-			c.JSON(http.StatusServiceUnavailable, gin.H{
-				"err":     fmt.Sprint(err),
-				"message": sendmsg,
-				"srcmsg":  fmt.Sprint(msgtext),
-			})
-			msg := tgbotapi.NewMessage(chatid, "Error sending message, checkout logs")
-			bot.Send(msg)
+			if err != nil {
+				log.Printf("message: ", buf)
+				sendMessage(buf)
+				break
+			}
 		}
+
 	})
 	router.Run(cfg.ListenAddr)
 }
